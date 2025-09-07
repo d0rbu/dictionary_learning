@@ -3,6 +3,7 @@ Training dictionaries
 """
 
 import json
+from collections import OrderedDict
 import torch.multiprocessing as mp
 import os
 from queue import Empty
@@ -29,18 +30,18 @@ def new_wandb_process(config, log_queue, entity, project):
 
 
 def log_stats(
-    trainers,
+    trainers: dict,
     step: int,
     act: t.Tensor,
     activations_split_by_head: bool,
     transcoder: bool,
-    log_queues: list = [],
+    log_queues: dict = {},
     verbose: bool = False,
 ):
     with t.no_grad():
         # quick hack to make sure all trainers get the same x
         z = act.clone()
-        for i, trainer in enumerate(trainers):
+        for i, (name, trainer) in enumerate(trainers.items()):
             log = {}
             act = z.clone()
             if activations_split_by_head:  # x.shape: [batch, pos, n_heads, d_head]
@@ -81,7 +82,7 @@ def log_stats(
                 log[f"{name}"] = value
 
             if log_queues:
-                log_queues[i].put(log)
+                log_queues[name].put(log)
 
 
 def get_norm_factor(data, steps: int, tqdm_kwargs: dict = {}):
@@ -118,6 +119,7 @@ def trainSAE(
     data,
     trainer_configs: list[dict],
     steps: int,
+    trainer_names: list[str] | None = None,
     use_wandb: bool = False,
     wandb_entity: str = "",
     wandb_project: str = "",
@@ -151,24 +153,27 @@ def trainSAE(
         else t.autocast(device_type=device_type, dtype=autocast_dtype)
     )
 
-    trainers = []
-    for i, config in enumerate(trainer_configs):
+    if trainer_names is None:
+        trainer_names = [f"trainer_{i}" for i in range(len(trainer_configs))]
+
+    trainers = OrderedDict()
+    for name, config in zip(trainer_names, trainer_configs):
         if "wandb_name" in config:
-            config["wandb_name"] = f"{config['wandb_name']}_trainer_{i}"
+            config["wandb_name"] = f"{config['wandb_name']}_{name}"
         trainer_class = config["trainer"]
         del config["trainer"]
-        trainers.append(trainer_class(**config))
+        trainers[name] = trainer_class(**config)
 
     wandb_processes = []
-    log_queues = []
+    log_queues = {}
 
     if use_wandb:
         # Note: If encountering wandb and CUDA related errors, try setting start method to spawn in the if __name__ == "__main__" block
         # https://docs.python.org/3/library/multiprocessing.html#multiprocessing.set_start_method
         # Everything should work fine with the default fork method but it may not be as robust
-        for i, trainer in enumerate(trainers):
+        for name, trainer in trainers.items():
             log_queue = mp.Queue()
-            log_queues.append(log_queue)
+            log_queues[name] = log_queue
             wandb_config = trainer.config | run_cfg
             # Make sure wandb config doesn't contain any CUDA tensors
             wandb_config = {
@@ -184,26 +189,22 @@ def trainSAE(
 
     # make save dirs, export config
     if save_dir is not None:
-        save_dirs = [
-            os.path.join(save_dir, f"trainer_{i}") for i in range(len(trainer_configs))
-        ]
-        for trainer, dir in zip(trainers, save_dirs):
-            os.makedirs(dir, exist_ok=True)
+        for name, trainer in trainers.items():
+            trainer_save_dir = os.path.join(save_dir, name)
+            os.makedirs(trainer_save_dir, exist_ok=True)
             # save config
             config = {"trainer": trainer.config}
             try:
                 config["buffer"] = data.config
             except Exception:
                 pass
-            with open(os.path.join(dir, "config.json"), "w") as f:
+            with open(os.path.join(trainer_save_dir, "config.json"), "w") as f:
                 json.dump(config, f, indent=4)
-    else:
-        save_dirs = [None for _ in trainer_configs]
 
     if normalize_activations:
         norm_factor = get_norm_factor(data, steps=100, tqdm_kwargs=tqdm_kwargs)
 
-        for trainer in trainers:
+        for name, trainer in trainers.items():
             trainer.config["norm_factor"] = norm_factor
             # Verify that all autoencoders have a scale_biases method
             trainer.ae.scale_biases(1.0)
@@ -230,22 +231,21 @@ def trainSAE(
             )
 
         # saving
-        if save_steps is not None and step in save_steps:
-            for dir, trainer in zip(save_dirs, trainers):
-                if dir is None:
-                    continue
+        if save_steps is not None and step in save_steps and save_dir is not None:
+            for name, trainer in trainers.items():
+                trainer_save_dir = os.path.join(save_dir, name)
 
                 if normalize_activations:
                     # Temporarily scale up biases for checkpoint saving
                     trainer.ae.scale_biases(norm_factor)
 
-                if not os.path.exists(os.path.join(dir, "checkpoints")):
-                    os.mkdir(os.path.join(dir, "checkpoints"))
+                if not os.path.exists(os.path.join(trainer_save_dir, "checkpoints")):
+                    os.mkdir(os.path.join(trainer_save_dir, "checkpoints"))
 
                 checkpoint = {k: v.cpu() for k, v in trainer.ae.state_dict().items()}
                 t.save(
                     checkpoint,
-                    os.path.join(dir, "checkpoints", f"ae_{step}.pt"),
+                    os.path.join(trainer_save_dir, "checkpoints", f"ae_{step}.pt"),
                 )
 
                 if normalize_activations:
@@ -253,9 +253,8 @@ def trainSAE(
 
         # backup
         if backup_steps is not None and step % backup_steps == 0:
-            for save_dir, trainer in zip(save_dirs, trainers):
-                if save_dir is None:
-                    continue
+            for name, trainer in trainers.items():
+                trainer_save_dir = os.path.join(save_dir, name)
                 # save the current state of the trainer for resume if training is interrupted
                 # this will be overwritten by the next checkpoint and at the end of training
                 t.save(
@@ -266,21 +265,23 @@ def trainSAE(
                         "config": trainer.config,
                         "norm_factor": norm_factor,
                     },
-                    os.path.join(save_dir, "ae.pt"),
+                    os.path.join(trainer_save_dir, "ae.pt"),
                 )
 
         # training
-        for trainer in trainers:
+        for name, trainer in trainers.items():
             with autocast_context:
                 trainer.update(step, act)
 
     # save final SAEs
-    for save_dir, trainer in zip(save_dirs, trainers):
+    for name, trainer in trainers.items():
         if normalize_activations:
             trainer.ae.scale_biases(norm_factor)
+
         if save_dir is not None:
+            trainer_save_dir = os.path.join(save_dir, name)
             final = {k: v.cpu() for k, v in trainer.ae.state_dict().items()}
-            t.save(final, os.path.join(save_dir, "ae.pt"))
+            t.save(final, os.path.join(trainer_save_dir, "ae.pt"))
 
     # Signal wandb processes to finish
     if use_wandb:
