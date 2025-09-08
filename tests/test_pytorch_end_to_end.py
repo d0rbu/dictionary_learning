@@ -13,7 +13,6 @@ from dictionary_learning.utils import (
     load_dictionary,
 )
 
-# from dictionary_learning.buffer import ActivationBuffer
 from dictionary_learning.pytorch_buffer import ActivationBuffer
 from dictionary_learning.dictionary import (
     AutoEncoder,
