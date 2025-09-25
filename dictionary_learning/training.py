@@ -95,12 +95,12 @@ def get_norm_factor(data, steps: int, tqdm_kwargs: dict = {}):
     total_mean_squared_norm = 0
     count = 0
 
-    for step, act_BD in enumerate(
-        tqdm(data, total=steps, desc="Calculating norm factor", **tqdm_kwargs)
+    for _step, act_BD in tqdm(
+        zip(range(steps), data, strict=False),
+        total=steps,
+        desc="Calculating norm factor",
+        **tqdm_kwargs,
     ):
-        if step > steps:
-            break
-
         count += 1
         mean_squared_norm = t.mean(t.sum(act_BD**2, dim=1))
         total_mean_squared_norm += mean_squared_norm
