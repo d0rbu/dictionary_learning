@@ -105,8 +105,6 @@ def get_norm_factor(data, steps: int, tqdm_kwargs: dict = {}):
         mean_squared_norm = t.mean(t.sum(act_BD**2, dim=1))
         total_mean_squared_norm += mean_squared_norm
 
-    print(f"Count: {count}")
-    print(f"Total mean squared norm: {total_mean_squared_norm}")
     average_mean_squared_norm = total_mean_squared_norm / count
     norm_factor = t.sqrt(average_mean_squared_norm).item()
 
