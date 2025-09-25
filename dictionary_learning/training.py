@@ -3,17 +3,16 @@ Training dictionaries
 """
 
 import json
-from collections import OrderedDict
-import torch.multiprocessing as mp
 import os
+from collections import OrderedDict
+from contextlib import nullcontext
 from queue import Empty
 from typing import Optional
-from contextlib import nullcontext
 
 import torch as t
-from tqdm import tqdm
-
+import torch.multiprocessing as mp
 import wandb
+from tqdm import tqdm
 
 
 def new_wandb_process(config, log_queue, entity, project):
@@ -160,8 +159,7 @@ def trainSAE(
     for name, config in zip(trainer_names, trainer_configs):
         if "wandb_name" in config:
             config["wandb_name"] = f"{config['wandb_name']}_{name}"
-        trainer_class = config["trainer"]
-        del config["trainer"]
+        trainer_class = config.pop("trainer")
         trainers[name] = trainer_class(**config)
 
     wandb_processes = []
