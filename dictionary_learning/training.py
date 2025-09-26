@@ -218,7 +218,9 @@ def trainSAE(
                 json.dump(config, f, indent=4)
 
     if activation_layer_indices is None:
-        activation_layer_indices = sorted({trainer.layer for trainer in trainers})
+        activation_layer_indices = sorted(
+            {trainer.layer for trainer in trainers.values()}
+        )
 
     max_layer_idx = activation_layer_indices[-1]
     layers_to_relative_idx = {
