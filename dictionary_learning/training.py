@@ -34,7 +34,7 @@ def log_stats(
     act: t.Tensor,
     activations_split_by_head: bool,
     transcoder: bool,
-    layers_to_relative_idx: dict,
+    layer_indices: list[int],
     log_queues: dict = {},
     verbose: bool = False,
 ):
@@ -44,7 +44,7 @@ def log_stats(
         for i, (name, trainer) in enumerate(trainers.items()):
             log = {}
             act = z.clone()
-            relative_idx = layers_to_relative_idx[trainer.layer]
+            relative_idx = layer_indices.index(trainer.config["layer"])
 
             act = act[:, relative_idx]
             if activations_split_by_head:  # x.shape: [batch, pos, n_heads, d_head]
@@ -88,9 +88,7 @@ def log_stats(
                 log_queues[name].put(log)
 
 
-def get_norm_factors(
-    data, steps: int, device: str = "cuda", num_layers: int = 1, tqdm_kwargs: dict = {}
-) -> t.Tensor:
+def get_norm_factors(data, steps: int, tqdm_kwargs: dict = {}) -> t.Tensor:
     """Per Section 3.1, find a fixed scalar factor so activation vectors have unit mean squared norm.
     This is very helpful for hyperparameter transfer between different layers and models.
     Use more steps for more accurate results.
@@ -99,10 +97,11 @@ def get_norm_factors(
     If experiencing troubles with hyperparameter transfer between models, it may be worth instead normalizing to the square root of d_model.
     https://transformer-circuits.pub/2024/april-update/index.html#training-saes"""
 
-    total_mean_squared_norm = t.zeros(num_layers, device=device)
+    total_mean_squared_norm = None
+    activation_layer_indices = None
     count = 0
 
-    for _step, act_BLD in tqdm(
+    for _step, (act_BLD, layer_indices) in tqdm(
         zip(range(steps), data, strict=False),
         total=steps,
         desc="Calculating norm factor",
@@ -113,14 +112,22 @@ def get_norm_factors(
         if act_BLD.ndim == 2:
             act_BLD = act_BLD.unsqueeze(1)
 
-        assert act_BLD.shape[1] == num_layers, (
+        assert act_BLD.shape[1] == len(layer_indices), (
             "Number of layers must match the number of layers in the data"
-            f"act_BLD.shape[1]={act_BLD.shape[1]} is not equal to num_layers={num_layers}"
+            f"act_BLD.shape[1]={act_BLD.shape[1]} is not equal to num_layers={len(layer_indices)}"
         )
 
         # (B, L, D) -> (B, L) -> (L)
         mean_squared_norm = t.mean(t.sum(act_BLD**2, dim=-1), dim=0)
+
+        if total_mean_squared_norm is None:
+            total_mean_squared_norm = mean_squared_norm
+            activation_layer_indices = layer_indices
+            continue
+
         total_mean_squared_norm += mean_squared_norm
+
+    assert total_mean_squared_norm is not None, "No activations found"
 
     average_mean_squared_norm = total_mean_squared_norm / count
     norm_factors = t.sqrt(average_mean_squared_norm)
@@ -128,7 +135,7 @@ def get_norm_factors(
     print(f"Average mean squared norm: {average_mean_squared_norm}")
     print(f"Norm factors: {norm_factors}")
 
-    return norm_factors
+    return norm_factors, activation_layer_indices
 
 
 def trainSAE(
@@ -151,7 +158,6 @@ def trainSAE(
     autocast_dtype: t.dtype = t.float32,
     backup_steps: Optional[int] = None,
     tqdm_kwargs: dict = {},
-    activation_layer_indices: list[int] | None = None,
 ):
     """
     Train SAEs using the given trainers
@@ -217,28 +223,15 @@ def trainSAE(
             with open(os.path.join(trainer_save_dir, "config.json"), "w") as f:
                 json.dump(config, f, indent=4)
 
-    if activation_layer_indices is None:
-        activation_layer_indices = sorted(
-            {trainer.layer for trainer in trainers.values()}
-        )
-
-    max_layer_idx = activation_layer_indices[-1]
-    layers_to_relative_idx = {
-        layer_idx: relative_idx
-        for relative_idx, layer_idx in enumerate(activation_layer_indices)
-    }
-
     if normalize_activations:
-        norm_factors = get_norm_factors(
+        norm_factors, activation_layer_indices = get_norm_factors(
             data,
             steps=100,
-            num_layers=len(activation_layer_indices),
             tqdm_kwargs=tqdm_kwargs,
-            device=device,
         ).unsqueeze(-1)
 
         for name, trainer in trainers.items():
-            relative_idx = layers_to_relative_idx[trainer.layer]
+            relative_idx = activation_layer_indices.index(trainer.config["layer"])
 
             norm_factor = norm_factors[relative_idx].item()
 
@@ -246,29 +239,9 @@ def trainSAE(
             # Verify that all autoencoders have a scale_biases method
             trainer.ae.scale_biases(1.0)
     else:
-        norm_factors = t.ones((len(activation_layer_indices), 1), device=device)
+        norm_factors = t.ones((1,), device=device)
 
-    for step, act in enumerate(tqdm(data, total=steps, **tqdm_kwargs)):
-        num_activation_dims = act.ndim
-
-        if num_activation_dims == 2:
-            num_layers = 1
-            act = act.unsqueeze(1)
-            assert activation_layer_indices is None, (
-                "activation_layer_indices must be None for 2D activations"
-            )
-        elif num_activation_dims == 3:
-            _batch_size, num_layers, _activation_dim = act.shape
-            assert activation_layer_indices is not None, (
-                "activation_layer_indices must be provided for 3D activations"
-            )
-            assert max_layer_idx < num_layers, (
-                "max_layer_idx must be less than the number of layers"
-                f"max_layer_idx={max_layer_idx} is not less than num_layers={num_layers}"
-            )
-        else:
-            raise ValueError(f"Invalid activation shape: {act.shape}")
-
+    for step, (act, layer_indices) in enumerate(tqdm(data, total=steps, **tqdm_kwargs)):
         act = act.to(dtype=autocast_dtype)
 
         if normalize_activations:
@@ -285,7 +258,7 @@ def trainSAE(
                 act,
                 activations_split_by_head,
                 transcoder,
-                layers_to_relative_idx,
+                layer_indices,
                 log_queues=log_queues,
                 verbose=verbose,
             )
@@ -294,7 +267,7 @@ def trainSAE(
         if save_steps is not None and step in save_steps and save_dir is not None:
             for name, trainer in trainers.items():
                 trainer_save_dir = os.path.join(save_dir, name)
-                relative_idx = layers_to_relative_idx[trainer.layer]
+                relative_idx = layer_indices.index(trainer.config["layer"])
                 norm_factor = norm_factors[relative_idx].item()
 
                 if normalize_activations:
@@ -333,7 +306,7 @@ def trainSAE(
         # training
         for name, trainer in trainers.items():
             with autocast_context:
-                relative_idx = layers_to_relative_idx[trainer.layer]
+                relative_idx = layer_indices.index(trainer.config["layer"])
                 act = act[:, relative_idx]
                 trainer.update(step, act)
 
