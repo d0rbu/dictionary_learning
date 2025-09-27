@@ -356,4 +356,5 @@ class BatchTopKTrainer(SAETrainer):
             if t.norm(guess - prev) < tol:
                 break
 
+        print(guess.shape)
         return guess
