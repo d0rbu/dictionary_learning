@@ -345,6 +345,9 @@ class BatchTopKTrainer(SAETrainer):
         prev = t.zeros_like(guess)
         weights = t.ones(len(points), device=points.device)
 
+        print(guess.shape)
+        print(prev.shape)
+        print(weights.shape)
         for _ in range(max_iter):
             prev = guess
             weights = 1 / t.norm(points - guess, dim=1)
