@@ -228,7 +228,8 @@ def trainSAE(
             data,
             steps=100,
             tqdm_kwargs=tqdm_kwargs,
-        ).unsqueeze(-1)
+        )
+        norm_factors = norm_factors.unsqueeze(-1)
 
         for name, trainer in trainers.items():
             relative_idx = activation_layer_indices.index(trainer.config["layer"])
