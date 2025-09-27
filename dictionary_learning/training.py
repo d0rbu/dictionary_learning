@@ -309,6 +309,8 @@ def trainSAE(
             with autocast_context:
                 relative_idx = layer_indices.index(trainer.config["layer"])
                 act = act[:, relative_idx]
+                print(relative_idx)
+                print(act.shape)
                 trainer.update(step, act)
 
     # save final SAEs
