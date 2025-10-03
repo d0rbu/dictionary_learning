@@ -268,8 +268,12 @@ def trainSAE(
         if save_steps is not None and step in save_steps and save_dir is not None:
             for name, trainer in trainers.items():
                 trainer_save_dir = os.path.join(save_dir, name)
-                relative_idx = layer_indices.index(trainer.config["layer"])
-                norm_factor = norm_factors[relative_idx].item()
+
+                if norm_factors.ndim == 1:
+                    norm_factor = norm_factors.item()
+                else:
+                    relative_idx = layer_indices.index(trainer.config["layer"])
+                    norm_factor = norm_factors[relative_idx].item()
 
                 if normalize_activations:
                     # Temporarily scale up biases for checkpoint saving
