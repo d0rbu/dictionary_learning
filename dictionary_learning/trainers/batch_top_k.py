@@ -341,13 +341,13 @@ class BatchTopKTrainer(SAETrainer):
 
     @staticmethod
     def geometric_median(points: t.Tensor, max_iter: int = 100, tol: float = 1e-5):
-        guess = points.mean(dim=0)
-        prev = t.zeros_like(guess)
-        weights = t.ones(len(points), device=points.device)
+        guess = points.mean(dim=0)  # (B, D) -> (D,)
+        prev = t.zeros_like(guess)  # (D,)
+        weights = t.ones(len(points), device=points.device)  # (B,)
 
         for _ in range(max_iter):
             prev = guess
-            weights = 1 / t.norm(points - guess, dim=1)
+            weights = 1 / t.norm(points - guess, dim=1)  # (B,)
             weights /= weights.sum()
             guess = (weights.unsqueeze(1) * points).sum(dim=0)
             if t.norm(guess - prev) < tol:
