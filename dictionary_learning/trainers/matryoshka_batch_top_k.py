@@ -1,17 +1,16 @@
+from collections import namedtuple
+from math import isclose
+from typing import Optional
+
 import torch as t
 import torch.nn as nn
-import torch.nn.functional as F
-import einops
-from collections import namedtuple
-from typing import Optional
-from math import isclose
 
 from ..dictionary import Dictionary
 from ..trainers.trainer import (
     SAETrainer,
     get_lr_schedule,
-    set_decoder_norm_to_unit_norm,
     remove_gradient_parallel_to_decoder_directions,
+    set_decoder_norm_to_unit_norm,
 )
 
 
@@ -374,7 +373,7 @@ class MatryoshkaBatchTopKTrainer(SAETrainer):
     def update(self, step, x):
         if step == 0:
             median = self.geometric_median(x)
-            self.ae.b_dec.data = median
+            self.ae.b_dec.data.copy_(median)
 
         x = x.to(self.device)
         loss = self.loss(x, step=step)
