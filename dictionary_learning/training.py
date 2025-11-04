@@ -2,7 +2,6 @@
 Training dictionaries
 """
 
-import asyncio
 import json
 import os
 from collections import OrderedDict
@@ -139,7 +138,7 @@ def get_norm_factors(data, steps: int, tqdm_kwargs: dict = {}) -> t.Tensor:
     return norm_factors, activation_layer_indices
 
 
-async def trainSAE(
+def trainSAE(
     data,
     trainer_configs: list[dict],
     steps: int,
@@ -245,7 +244,6 @@ async def trainSAE(
 
     for step, (act, layer_indices) in enumerate(tqdm(data, total=steps, **tqdm_kwargs)):
         act = act.to(dtype=autocast_dtype)
-        await asyncio.sleep(0)
 
         if normalize_activations:
             act /= norm_factors
